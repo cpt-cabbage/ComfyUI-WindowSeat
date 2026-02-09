@@ -1,5 +1,6 @@
 import gc
 import json
+import logging
 
 import safetensors.torch
 import torch
@@ -8,7 +9,7 @@ from diffusers import (
     BitsAndBytesConfig,
     QwenImageTransformer2DModel,
 )
-from huggingface_hub import hf_hub_download
+from huggingface_hub import hf_hub_download, try_to_load_from_cache
 from peft import LoraConfig
 
 import comfy.utils
@@ -16,8 +17,19 @@ import model_management
 
 from . import pipeline
 
+logger = logging.getLogger("ComfyUI-WindowSeat")
+
 BASE_MODEL_URI = "Qwen/Qwen-Image-Edit-2509"
 LORA_MODEL_URI = "huawei-bayerlab/windowseat-reflection-removal-v1-0"
+
+
+def _is_cached(repo_id, filename):
+    """Check if a HuggingFace Hub file is already in the local cache."""
+    try:
+        result = try_to_load_from_cache(repo_id, filename)
+        return isinstance(result, str)
+    except Exception:
+        return False
 
 
 class WindowSeatModelLoader:
@@ -34,14 +46,22 @@ class WindowSeatModelLoader:
 
     def load_model(self):
         device = model_management.get_torch_device()
+        pbar = comfy.utils.ProgressBar(5)
 
-        # Read processing resolution from model config
+        # Step 1/5: Read processing resolution from model config
+        logger.info("[WindowSeat] Step 1/5: Fetching model configuration...")
         config_file = hf_hub_download(LORA_MODEL_URI, "model_index.json")
         with open(config_file, "r") as f:
             config_dict = json.load(f)
         processing_resolution = config_dict["processing_resolution"]
+        pbar.update(1)
 
-        print("[WindowSeat] Loading VAE...")
+        # Step 2/5: Load VAE
+        vae_cached = _is_cached(BASE_MODEL_URI, "vae/config.json")
+        if vae_cached:
+            logger.info("[WindowSeat] Step 2/5: Loading VAE from cache...")
+        else:
+            logger.info("[WindowSeat] Step 2/5: Downloading VAE from %s (first run only)...", BASE_MODEL_URI)
         vae = AutoencoderKLQwenImage.from_pretrained(
             BASE_MODEL_URI,
             subfolder="vae",
@@ -51,8 +71,19 @@ class WindowSeatModelLoader:
             use_safetensors=True,
         )
         vae.to(device, dtype=torch.bfloat16)
+        logger.info("[WindowSeat] Step 2/5: VAE ready.")
+        pbar.update(1)
 
-        print("[WindowSeat] Loading Transformer (4-bit NF4 quantized)...")
+        # Step 3/5: Load Transformer
+        transformer_cached = _is_cached(BASE_MODEL_URI, "transformer/config.json")
+        if transformer_cached:
+            logger.info("[WindowSeat] Step 3/5: Loading Transformer (4-bit NF4) from cache...")
+        else:
+            logger.info(
+                "[WindowSeat] Step 3/5: Downloading Transformer from %s "
+                "(largest component, may take several minutes on first run)...",
+                BASE_MODEL_URI,
+            )
         nf4 = BitsAndBytesConfig(
             load_in_4bit=True,
             bnb_4bit_quant_type="nf4",
@@ -66,8 +97,15 @@ class WindowSeatModelLoader:
             quantization_config=nf4,
             device_map=device,
         )
+        logger.info("[WindowSeat] Step 3/5: Transformer ready.")
+        pbar.update(1)
 
-        print("[WindowSeat] Applying LoRA adapter...")
+        # Step 4/5: Apply LoRA adapter
+        lora_cached = _is_cached(LORA_MODEL_URI, "transformer_lora/pytorch_lora_weights.safetensors")
+        if lora_cached:
+            logger.info("[WindowSeat] Step 4/5: Applying LoRA adapter from cache...")
+        else:
+            logger.info("[WindowSeat] Step 4/5: Downloading LoRA adapter from %s...", LORA_MODEL_URI)
         lora_config = LoraConfig.from_pretrained(LORA_MODEL_URI, subfolder="transformer_lora")
         transformer.add_adapter(lora_config)
         lora_weights_path = hf_hub_download(
@@ -77,14 +115,23 @@ class WindowSeatModelLoader:
         missing, unexpected = transformer.load_state_dict(state_dict, strict=False)
         if unexpected:
             raise ValueError(f"Unexpected keys in LoRA state dict: {unexpected}")
+        logger.info("[WindowSeat] Step 4/5: LoRA adapter applied.")
+        pbar.update(1)
 
-        print("[WindowSeat] Loading text embeddings...")
+        # Step 5/5: Load text embeddings
+        embeds_cached = _is_cached(LORA_MODEL_URI, "text_embeddings/state_dict.safetensors")
+        if embeds_cached:
+            logger.info("[WindowSeat] Step 5/5: Loading text embeddings from cache...")
+        else:
+            logger.info("[WindowSeat] Step 5/5: Downloading text embeddings from %s...", LORA_MODEL_URI)
         embeds_path = hf_hub_download(
             LORA_MODEL_URI, "state_dict.safetensors", subfolder="text_embeddings"
         )
         embeds_dict = safetensors.torch.load_file(embeds_path)
+        logger.info("[WindowSeat] Step 5/5: Text embeddings ready.")
+        pbar.update(1)
 
-        print("[WindowSeat] Model loaded successfully.")
+        logger.info("[WindowSeat] All models loaded successfully.")
 
         model_dict = {
             "vae": vae,
