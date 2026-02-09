@@ -174,12 +174,12 @@ class WindowSeatReflectionRemoval:
                     "tooltip": "When enabled, uses tile_size for tiling. When disabled, uses the image short edge (fewer tiles, faster).",
                 }),
                 "strength": ("FLOAT", {
-                    "default": 1.0, "min": 0.1, "max": 3.0, "step": 0.05,
-                    "tooltip": "Reflection removal intensity. 1.0 = default. Values above 1.0 push harder to remove stubborn reflections. Values below 1.0 give a subtler effect.",
+                    "default": 1.0, "min": 0.0, "max": 1.0, "step": 0.05,
+                    "tooltip": "Blends between original (0.0) and reflection-removed (1.0) image. Use values below 1.0 for a subtler effect.",
                 }),
                 "timestep": ("INT", {
-                    "default": 499, "min": 1, "max": 999, "step": 1,
-                    "tooltip": "Advanced: denoising timestep. The model was trained at 499. Higher values may predict stronger corrections but risk artifacts.",
+                    "default": 499, "min": 400, "max": 600, "step": 1,
+                    "tooltip": "Advanced: denoising timestep. The model was trained at 499. Small deviations may slightly adjust correction strength, but large changes will degrade quality.",
                 }),
             },
         }
@@ -210,17 +210,23 @@ class WindowSeatReflectionRemoval:
             )
             total_tiles += len(tiles)
 
+        logger.info("[WindowSeat] Processing %d image(s), %d tile(s) total.", N, total_tiles)
+
         pbar = comfy.utils.ProgressBar(total_tiles)
-        tiles_done = [0]
+        tiles_processed = [0]
 
         def progress_callback(completed):
-            delta = completed - (tiles_done[0] % 10000)
-            tiles_done[0] += delta
-            pbar.update(delta)
+            delta = completed - tiles_processed[0]
+            if delta > 0:
+                pbar.update(delta)
+                tiles_processed[0] += delta
+                logger.info("[WindowSeat] Tile %d/%d done.", tiles_processed[0], total_tiles)
 
         results = []
         for i in range(N):
             single_img = img_batch[i]  # [C, H, W]
+            _, H, W = single_img.shape
+            logger.info("[WindowSeat] Image %d/%d (%dx%d)...", i + 1, N, W, H)
 
             result_chw = pipeline.process_single_image(
                 single_img,
@@ -241,6 +247,8 @@ class WindowSeatReflectionRemoval:
             # [C, H, W] [0,1] -> [H, W, C]
             result_hwc = result_chw.permute(1, 2, 0).clamp(0.0, 1.0)
             results.append(result_hwc)
+
+        logger.info("[WindowSeat] Done.")
 
         # Cleanup
         torch.cuda.empty_cache()

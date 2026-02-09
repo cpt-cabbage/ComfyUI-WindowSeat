@@ -137,7 +137,6 @@ def flow_step(
     vae: AutoencoderKLQwenImage,
     embeds_dict: dict[str, torch.Tensor],
     timestep: int = 499,
-    strength: float = 1.0,
 ) -> torch.Tensor:
     prompt_embeds = embeds_dict["prompt_embeds"]
     prompt_mask = embeds_dict["prompt_mask"]
@@ -202,7 +201,7 @@ def flow_step(
         vae_scale_factor=vae_scale_factor,
     )
 
-    latent_output = model_input.to(vae.dtype) - strength * model_pred.to(vae.dtype)
+    latent_output = model_input.to(vae.dtype) - model_pred.to(vae.dtype)
     return latent_output
 
 
@@ -263,7 +262,7 @@ def process_single_image(
         batch_tensor = torch.stack(batch_inputs, dim=0)
 
         latents = encode(batch_tensor, vae)
-        latents = flow_step(latents, transformer, vae, embeds_dict, timestep=timestep, strength=strength)
+        latents = flow_step(latents, transformer, vae, embeds_dict, timestep=timestep)
         pixel_pred = decode(latents, vae)
 
         for j, tile_info in enumerate(batch_tiles):
@@ -312,5 +311,11 @@ def process_single_image(
         result = torchvision.transforms.functional.to_tensor(pil_resized)
     else:
         result = stitched_01
+
+    # Apply strength as pixel-space blend between original and processed
+    if strength != 1.0:
+        original_01 = (img_chw_norm + 1.0) / 2.0
+        result = original_01 * (1.0 - strength) + result * strength
+        result = result.clamp(0.0, 1.0)
 
     return result
