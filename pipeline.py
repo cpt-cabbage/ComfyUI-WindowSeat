@@ -136,6 +136,8 @@ def flow_step(
     transformer: QwenImageTransformer2DModel,
     vae: AutoencoderKLQwenImage,
     embeds_dict: dict[str, torch.Tensor],
+    timestep: int = 499,
+    strength: float = 1.0,
 ) -> torch.Tensor:
     prompt_embeds = embeds_dict["prompt_embeds"]
     prompt_mask = embeds_dict["prompt_mask"]
@@ -165,7 +167,7 @@ def flow_step(
     )
     packed_model_input = packed_model_input.to(torch.bfloat16)
 
-    timestep = torch.full((B,), 499.0, device=device, dtype=torch.bfloat16) / 1000.0
+    timestep = torch.full((B,), float(timestep), device=device, dtype=torch.bfloat16) / 1000.0
 
     h_img = H // 2
     w_img = W // 2
@@ -200,7 +202,7 @@ def flow_step(
         vae_scale_factor=vae_scale_factor,
     )
 
-    latent_output = model_input.to(vae.dtype) - model_pred.to(vae.dtype)
+    latent_output = model_input.to(vae.dtype) - strength * model_pred.to(vae.dtype)
     return latent_output
 
 
@@ -216,6 +218,8 @@ def process_single_image(
     min_overlap=64,
     batch_size=1,
     more_tiles=False,
+    strength=1.0,
+    timestep=499,
     progress_callback=None,
 ):
     """Process a single image through the WindowSeat reflection removal pipeline.
@@ -259,7 +263,7 @@ def process_single_image(
         batch_tensor = torch.stack(batch_inputs, dim=0)
 
         latents = encode(batch_tensor, vae)
-        latents = flow_step(latents, transformer, vae, embeds_dict)
+        latents = flow_step(latents, transformer, vae, embeds_dict, timestep=timestep, strength=strength)
         pixel_pred = decode(latents, vae)
 
         for j, tile_info in enumerate(batch_tiles):

@@ -126,6 +126,14 @@ class WindowSeatReflectionRemoval:
                     "default": False,
                     "tooltip": "When enabled, uses tile_size for tiling. When disabled, uses the image short edge (fewer tiles, faster).",
                 }),
+                "strength": ("FLOAT", {
+                    "default": 1.0, "min": 0.1, "max": 3.0, "step": 0.05,
+                    "tooltip": "Reflection removal intensity. 1.0 = default. Values above 1.0 push harder to remove stubborn reflections. Values below 1.0 give a subtler effect.",
+                }),
+                "timestep": ("INT", {
+                    "default": 499, "min": 1, "max": 999, "step": 1,
+                    "tooltip": "Advanced: denoising timestep. The model was trained at 499. Higher values may predict stronger corrections but risk artifacts.",
+                }),
             },
         }
 
@@ -134,7 +142,7 @@ class WindowSeatReflectionRemoval:
     FUNCTION = "remove_reflections"
     CATEGORY = "WindowSeat"
 
-    def remove_reflections(self, windowseat_model, image, tile_size=768, max_tiles=4, min_overlap=64, batch_size=1, more_tiles=False):
+    def remove_reflections(self, windowseat_model, image, tile_size=768, max_tiles=4, min_overlap=64, batch_size=1, more_tiles=False, strength=1.0, timestep=499):
         vae = windowseat_model["vae"]
         transformer = windowseat_model["transformer"]
         embeds_dict = windowseat_model["embeds_dict"]
@@ -178,6 +186,8 @@ class WindowSeatReflectionRemoval:
                 min_overlap=min_overlap,
                 batch_size=batch_size,
                 more_tiles=more_tiles,
+                strength=strength,
+                timestep=timestep,
                 progress_callback=progress_callback,
             )
 
